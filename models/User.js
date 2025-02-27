@@ -5,17 +5,19 @@ const userSchema = new mongoose.Schema({
   emailid: { type: String, required: true},
   password: { type: String, required: true },
   phone: { type: String, required: true },
-  role: { type: String, default: "user" },
+  role: { type: String, required: true  },
   dob: { type: Date },
   gender: { type: String },
   address: { type: String },
   district: { type: String },
   state: { type: String },
-  country: { type: String },
+  
   qualification: { type: String },
   bio: { type: String }
 
-}, { timestamps: true });
+}, 
+// { timestamps: true }
+);
 
 const usermodel = mongoose.model('User', userSchema);
 

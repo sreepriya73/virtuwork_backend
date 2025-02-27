@@ -5,8 +5,13 @@ const Cors = require("cors");
 const jwt=require("jsonwebtoken")
 const bodyParser = require('body-parser');
 const { usermodel } = require('./models/User');
+const { Admin } = require("./models/Admin");
+const Task = require('./models/Task');
 
-let app = Express();
+
+
+
+const app = Express();
 
 app.use(Cors());
 app.use(Express.json());
@@ -122,7 +127,7 @@ app.get("/users/:id", async (req, res) => {
       }
   
       // Validate password
-      const isPasswordValid = await bcrypt.compare(password, admin.password);
+      const isPasswordValid = await Bcrypt.compare(password, admin.password);
       if (!isPasswordValid) {
         return res.status(401).json({ status: 'error', message: 'Invalid credentials!' });
       }
@@ -148,7 +153,7 @@ app.get("/users/:id", async (req, res) => {
       }
   
       // Hash the password
-      const hashedPassword = await bcrypt.hash(password, 10);
+      const hashedPassword = await Bcrypt.hash(password, 10);
   
       // Create new admin
       const newAdmin = new Admin({
@@ -164,6 +169,80 @@ app.get("/users/:id", async (req, res) => {
       res.status(500).json({ status: 'error', message: 'Internal Server Error' });
     }
   });
+
+  app.get('/users', async (req, res) => {
+    try {
+        const { role } = req.query;
+
+        // Validate role query parameter
+        if (!role) {
+            return res.status(400).json({ error: 'Role query parameter is required' });
+        }
+
+        // Find users with the specified role
+        const freelancers = await usermodel.find({ role });
+        res.status(200).json(freelancers);
+    } catch (error) {
+        console.error('Error fetching users:', error);
+        res.status(500).json({ error: 'Failed to fetch users', details: error.message });
+    }
+});
+
+
+ 
+// Create Task
+app.post('/tasks/add', async (req, res) => {
+  const { description, category, deadline, budget } = req.body;
+  try {
+    const task = new Task({ description, category, deadline, budget });
+    await task.save();
+    res.status(201).json({ message: 'Task created successfully', task });
+  } catch (error) {
+    res.status(500).json({ message: 'Error creating task', error });
+  }
+});
+
+// Get All Tasks
+app.get('/tasks/all', async (req, res) => {
+  try {
+    const tasks = await Task.find();
+    res.status(200).json(tasks);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching tasks', error });
+  }
+});
+
+
+
+// Delete Task
+app.delete('/tasks/delete/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    await Task.findByIdAndDelete(id);
+    res.status(200).json({ message: 'Task deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting task', error });
+  }
+});
+
+app.put('/tasks/accept/:id', async (req, res) => {
+  
+  try {
+    const updatedTask = await Task.findByIdAndUpdate(
+      req.params.id,
+      { status: 'accepted' },
+      { new: true }
+    );
+    res.status(200).json({ message: 'Task accepted successfully', updatedTask });
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).json({ message: 'Error accepting task', error });
+  }
+});
+
+
+
+
 
 app.listen(3030, () => {
     console.log("Server started on port 3030");
