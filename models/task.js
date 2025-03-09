@@ -30,6 +30,13 @@ const taskSchema = new mongoose.Schema({
   },
   
   createdAt: { type: Date, default: Date.now },
+
+  paymentStatus: { type: String, default: "pending" },
+  halfPaidAt: { type: Date,default: Date.now }, // New field for half payment timestamp
+  fullyPaidAt: { type: Date,default: Date.now },
+  rating: { type: Number, min: 1, max: 5 },
 });
+
+
 
 module.exports = mongoose.model("Task", taskSchema);

@@ -7,7 +7,7 @@ const userSchema = new mongoose.Schema({
   phone: { type: String, required: true },
   role: { 
     type: String, 
-    enum: ["client", "freelancer"], // Enum with "client" and "freelancer"
+    enum: ["Client", "Freelancer"], // Enum with "client" and "freelancer"
     required: true 
   },
   dob: { type: Date },
@@ -17,6 +17,7 @@ const userSchema = new mongoose.Schema({
   state: { type: String },
   qualification: { type: String },
   bio: { type: String },
+  rewardPoints: { type: Number, default: 0 },
 }, 
 // { timestamps: true } // Uncomment if you want createdAt/updatedAt fields
 );
