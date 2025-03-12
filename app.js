@@ -54,20 +54,101 @@ app.get("/", (req, res) => {
   res.send("hello");
 });
 
+// app.post("/uregister", async (req, res) => {
+//   try {
+//     let input = req.body;
+//     if (!input.password) {
+//       return res.status(400).json({ status: "error", message: "Password is required." });
+//     }
+//     let hashedPassword = await generateHashedPassword(input.password);
+//     input.password = hashedPassword;
+//     let user = new usermodel(input);
+//     await user.save();
+//     res.json({ status: "success" });
+//   } catch (error) {
+//     console.error("Registration error:", error);
+//     res.status(500).json({ status: "error", message: "Registration failed", details: error.message });
+//   }
+// });
+
+
+// Check if email exists
+app.post('/check-email', async (req, res) => {
+  try {
+    const { emailid } = req.body;
+    if (!emailid) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const user = await usermodel.findOne({ emailid });
+    if (user) {
+      return res.status(200).json({ exists: true });
+    }
+    return res.status(200).json({ exists: false });
+  } catch (error) {
+    console.error('Error checking email:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Check if phone exists
+app.post('/check-phone', async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone number is required' });
+    }
+
+    const user = await usermodel.findOne({ phone });
+    if (user) {
+      return res.status(200).json({ exists: true });
+    }
+    return res.status(200).json({ exists: false });
+  } catch (error) {
+    console.error('Error checking phone:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Updated Register user endpoint
 app.post("/uregister", async (req, res) => {
   try {
     let input = req.body;
+
+    // Check if email already exists
+    const emailExists = await usermodel.findOne({ emailid: input.emailid });
+    if (emailExists) {
+      return res.status(400).json({ status: "error", message: "Email already registered" });
+    }
+
+    // Check if phone already exists
+    const phoneExists = await usermodel.findOne({ phone: input.phone });
+    if (phoneExists) {
+      return res.status(400).json({ status: "error", message: "Phone number already registered" });
+    }
+
+    // Existing password check and hashing
     if (!input.password) {
       return res.status(400).json({ status: "error", message: "Password is required." });
     }
     let hashedPassword = await generateHashedPassword(input.password);
     input.password = hashedPassword;
-    let user = new usermodel(input);
+
+    let user = new usermodel(input); // Changed 'usermodel' to 'User' to match the defined model
     await user.save();
-    res.json({ status: "success" });
+    
+    res.json({ 
+      status: "success", 
+      message: "User registered successfully", 
+      userId: user._id // Added userId to match frontend expectation
+    });
   } catch (error) {
     console.error("Registration error:", error);
-    res.status(500).json({ status: "error", message: "Registration failed", details: error.message });
+    res.status(500).json({ 
+      status: "error", 
+      message: "Registration failed", 
+      details: error.message 
+    });
   }
 });
 
@@ -166,6 +247,7 @@ app.get("/users", async (req, res) => {
     res.status(500).json({ error: "Failed to fetch users", details: error.message });
   }
 });
+
 
 app.post("/tasks/add", authenticateToken, async (req, res) => {
   const { description, category, deadline, budget } = req.body;
@@ -436,16 +518,33 @@ app.put("/tasks/half-payment/:id", authenticateToken, async (req, res) => {
   try {
     const taskId = req.params.id;
     const clientId = req.user.userId;
+
+    if (!Mongoose.Types.ObjectId.isValid(taskId)) {
+      return res.status(400).json({ message: "Invalid task ID" });
+    }
+    if (!Mongoose.Types.ObjectId.isValid(clientId)) {
+      return res.status(400).json({ message: "Invalid client ID" });
+    }
+
+    console.log("Task ID:", taskId, "Client ID:", clientId);
     const task = await Task.findOne({ _id: taskId, ClientId: clientId });
     if (!task) return res.status(404).json({ message: "Task not found or you don’t own it" });
-    if (task.freelancerConfirmation !== "confirmed") return res.status(400).json({ message: "Task not confirmed" });
-    if (task.paymentStatus === "half paid" || task.paymentStatus === "fully paid") return res.status(400).json({ message: "Payment already processed" });
+
+    if (task.paymentStatus !== "pending") {
+      return res.status(400).json({ message: "Half payment already made or invalid status" });
+    }
+
+    const baseAmount = task.budget / 2;
+    const platformCharge = baseAmount * 0.05;
 
     task.paymentStatus = "half paid";
     task.halfPaidAt = new Date();
+    task.halfPaymentPlatformCharge = platformCharge;
     await task.save();
+
     res.status(200).json({ message: "Half payment marked successfully", task });
   } catch (error) {
+    console.error("Full error:", error);
     res.status(500).json({ message: "Error marking half payment", error: error.message });
   }
 });
@@ -454,7 +553,9 @@ app.put("/tasks/full-payment/:id", authenticateToken, async (req, res) => {
   try {
     const taskId = req.params.id;
     const clientId = req.user.userId;
-    const { rating } = req.body; // Expect rating with final payment
+    const { rating } = req.body;
+
+    console.log(`Processing full payment for task ${taskId} by client ${clientId} with rating ${rating}`);
 
     if (!rating || rating < 1 || rating > 5) {
       return res.status(400).json({ message: "Rating (1-5) is required for final payment" });
@@ -463,22 +564,28 @@ app.put("/tasks/full-payment/:id", authenticateToken, async (req, res) => {
     const task = await Task.findOne({ _id: taskId, ClientId: clientId });
     if (!task) return res.status(404).json({ message: "Task not found or you don’t own it" });
     if (task.paymentStatus === "fully paid") return res.status(400).json({ message: "Payment already fully completed" });
+    if (task.paymentStatus !== "half paid") return res.status(400).json({ message: "Half payment must be completed before full payment" });
     if (!task.submission) return res.status(400).json({ message: "Task not completed by freelancer" });
 
     task.paymentStatus = "fully paid";
     task.fullyPaidAt = new Date();
     task.rating = rating;
     await task.save();
+    console.log(`Task ${taskId} updated: paymentStatus=${task.paymentStatus}, rating=${task.rating}`);
 
-    // Award reward points to freelancer (e.g., 10 points per rating star)
     const freelancer = await usermodel.findById(task.freelancerId);
     if (freelancer) {
-      freelancer.rewardPoints = (freelancer.rewardPoints || 0) + (rating * 10);
+      const oldPoints = freelancer.rewardPoints || 0;
+      freelancer.rewardPoints = oldPoints + (rating * 10);
       await freelancer.save();
+      console.log(`Freelancer ${freelancer._id} updated: ${oldPoints} + ${rating * 10} = ${freelancer.rewardPoints}`);
+    } else {
+      console.error(`Freelancer not found for ID: ${task.freelancerId}`);
     }
 
     res.status(200).json({ message: "Full payment marked successfully and freelancer rated", task });
   } catch (error) {
+    console.error("Full payment error:", error);
     res.status(500).json({ message: "Error marking full payment", error: error.message });
   }
 });
@@ -507,39 +614,513 @@ app.put("/tasks/submit/:id", authenticateToken, async (req, res) => {
 });
 
 
+
+
+
+
+
+app.get("/tasks/platform-charges", async (req, res) => {
+  try {
+    const tasks = await Task.find({
+      $or: [
+        { halfPaymentPlatformCharge: { $gt: 0 } },
+        { fullPaymentPlatformCharge: { $gt: 0 } }
+      ]
+    })
+      .populate("ClientId", "username")
+      .populate("freelancerId", "username");
+    res.status(200).json(tasks);
+  } catch (error) {
+    console.error("Error fetching platform charges:", error);
+    res.status(500).json({ message: "Error fetching platform charges", error: error.message });
+  }
+});
+
+// Fetch all users (public)
+app.get("/ausers", async (req, res) => {
+  try {
+    const users = await usermodel.find().select("-password"); // Exclude sensitive fields
+    res.status(200).json(users);
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({ message: "Failed to fetch users", error: error.message });
+  }
+});
+
+// Delete a user (public)
+app.delete("/ausers/:id", async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const user = await usermodel.findByIdAndDelete(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.status(200).json({ message: "User deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting user:", error);
+    res.status(500).json({ message: "Error deleting user", error: error.message });
+  }
+});
+
+// Fetch daily sales (public)
+app.get("/daily-sales", async (req, res) => {
+  try {
+    const tasks = await Task.find({
+      $or: [
+        { halfPaidAt: { $exists: true } },
+        { fullyPaidAt: { $exists: true } }
+      ]
+    });
+
+    const salesByDate = {};
+    tasks.forEach((task) => {
+      const dates = [];
+      if (task.halfPaidAt) dates.push(new Date(task.halfPaidAt).toDateString());
+      if (task.fullyPaidAt) dates.push(new Date(task.fullyPaidAt).toDateString());
+
+      dates.forEach((date) => {
+        if (!salesByDate[date]) {
+          salesByDate[date] = { transactions: 0, baseAmount: 0, platformCharge: 0 };
+        }
+        const baseAmount = task.budget / 2;
+        const platformCharge = task.halfPaymentPlatformCharge || task.fullPaymentPlatformCharge || 0;
+        salesByDate[date].transactions += 1;
+        salesByDate[date].baseAmount += baseAmount;
+        salesByDate[date].platformCharge += platformCharge;
+      });
+    });
+
+    res.status(200).json(salesByDate);
+  } catch (error) {
+    console.error("Error fetching daily sales:", error);
+    res.status(500).json({ message: "Error fetching daily sales", error: error.message });
+  }
+});
+
+// Fetch user by ID (authenticated)
+app.get("/uusers/:id", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    if (req.user.userId !== userId) {
+      return res.status(403).json({ message: "Unauthorized: You can only view your own profile" });
+    }
+    const user = await usermodel.findById(userId).select("-password");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.status(200).json(user);
+  } catch (error) {
+    console.error("Error fetching user:", error);
+    res.status(500).json({ message: "Error fetching user", error: error.message });
+  }
+});
+
+// Update user profile (authenticated)
+app.put("/uusers/:id", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    if (req.user.userId !== userId) {
+      return res.status(403).json({ message: "Unauthorized: You can only update your own profile" });
+    }
+    const { username, emailid, phone } = req.body;
+    const updatedUser = await usermodel.findByIdAndUpdate(
+      userId,
+      { username, emailid, phone },
+      { new: true, runValidators: true }
+    ).select("-password");
+    if (!updatedUser) return res.status(404).json({ message: "User not found" });
+    res.status(200).json({ message: "Profile updated successfully", user: updatedUser });
+  } catch (error) {
+    console.error("Error updating user:", error);
+    res.status(500).json({ message: "Error updating user", error: error.message });
+  }
+});
+
+// Delete user (authenticated)
+app.delete("/uusers/:id", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.params.id;
+    if (req.user.userId !== userId) {
+      return res.status(403).json({ message: "Unauthorized: You can only delete your own account" });
+    }
+    const user = await usermodel.findByIdAndDelete(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    res.status(200).json({ message: "User deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting user:", error);
+    res.status(500).json({ message: "Error deleting user", error: error.message });
+  }
+});
+
+app.get("/freelancers/:freelancerId/profile", async (req, res) => {
+  try {
+    const freelancerId = req.params.freelancerId;
+    const freelancer = await usermodel.findById(freelancerId);
+    if (!freelancer || freelancer.role !== "freelancer") {
+      return res.status(404).json({ error: "Freelancer not found" });
+    }
+
+    // Assuming Task model exists with freelancerId, paymentStatus, and rating fields
+    const tasks = await Task.find({
+      freelancerId: freelancerId,
+      paymentStatus: "fully paid",
+      rating: { $exists: true, $ne: null },
+    }).select("rating");
+
+    let averageRating = 0;
+    if (tasks.length > 0) {
+      const totalRating = tasks.reduce((sum, task) => sum + task.rating, 0);
+      averageRating = (totalRating / tasks.length).toFixed(1);
+    }
+
+    res.status(200).json({
+      _id: freelancer._id,
+      username: freelancer.username,
+      emailid: freelancer.emailid,
+      phone: freelancer.phone,
+      averageRating: parseFloat(averageRating),
+      reviewCount: tasks.length,
+    });
+  } catch (error) {
+    console.error("Error fetching freelancer profile:", error);
+    res.status(500).json({ error: "Internal server error", details: error.message });
+  }
+});
+
+
+
+app.get("/tasks/freelancer/:freelancerId/completed", authenticateToken, async (req, res) => {
+  try {
+    const freelancerId = req.params.freelancerId;
+    if (req.user.userId !== freelancerId) {
+      return res.status(403).json({ message: "Unauthorized: You can only view your own work history" });
+    }
+
+    const tasks = await Task.find({
+      freelancerId: freelancerId,
+      submission: { $exists: true }, // Ensure submission exists (task completed)
+      paymentStatus: { $in: ["half paid", "fully paid"] }, // Only completed payments
+    })
+      .populate("ClientId", "username")
+      .populate("freelancerId", "username");
+
+    res.status(200).json(tasks);
+  } catch (error) {
+    console.error("Error fetching freelancer completed tasks:", error);
+    res.status(500).json({ message: "Error fetching completed tasks", error: error.message });
+  }
+});
+
+app.get("/tasks/freelancer-tasks", authenticateToken, async (req, res) => {
+  try {
+    const freelancerId = req.user.userId;
+    const tasks = await Task.find({
+      freelancerId,
+      $or: [{ status: "confirmed" }, { paymentStatus: "half paid" }],
+    }).select("_id title status paymentStatus");
+    res.json(tasks);
+  } catch (error) {
+    console.error("Error fetching freelancer tasks:", error);
+    res.status(500).json({ message: "Error fetching tasks", error: error.message });
+  }
+});
+
+app.get("/tasks/:taskId/progress", authenticateToken, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const userId = req.user.userId;
+
+    // Validate taskId
+    if (!taskId || !Mongoose.Types.ObjectId.isValid(taskId)) {
+      return res.status(400).json({ message: "Invalid task ID" });
+    }
+
+    const task = await Task.findOne({
+      _id: taskId,
+      $or: [{ freelancerId: userId }, { ClientId: userId }],
+    });
+
+    if (!task) {
+      return res.status(404).json({ message: "Task not found or unauthorized" });
+    }
+
+    const progress = Object.fromEntries(task.progress || new Map());
+    res.json({ progress });
+  } catch (error) {
+    console.error("Error fetching task progress:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+});
+
+// New Endpoint: Update Task Progress
+app.patch("/tasks/:taskId/progress", authenticateToken, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const { progress } = req.body; // e.g., { "1": true, "2": false, ... }
+    const userId = req.user.userId;
+
+    const task = await Task.findOne({
+      _id: taskId,
+      $or: [{ freelancerId: userId }, { ClientId: userId }],
+    });
+
+    if (!task) {
+      return res.status(404).json({ message: "Task not found or unauthorized" });
+    }
+
+    // Update progress (convert incoming object to Map)
+    task.progress = new Map(Object.entries(progress));
+    await task.save();
+
+    res.json({ message: "Progress updated successfully" });
+  } catch (error) {
+    console.error("Error updating task progress:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+});
+
+
+
+
+
+// Updated Endpoint: /tasks/client/:clientId/completed
+app.get("/tasks/client/:clientId/completed", async (req, res) => {
+  try {
+    const clientId = req.params.clientId;
+
+    // Validate clientId
+    if (!Mongoose.Types.ObjectId.isValid(clientId)) {
+      return res.status(400).json({ error: "Invalid client ID" });
+    }
+
+    const tasks = await Task.find({
+      ClientId: clientId, // Matches your schema's capitalization
+      status: "confirmed", // Tasks marked as completed
+      paymentStatus: "fully paid", // Ensure fully paid
+      submission: { $ne: null }, // Submission exists
+      rating: { $exists: false }, // Only unrated tasks (for SubmitWorkRating)
+    })
+      .populate("freelancerId", "username") // Populate freelancer username
+      .select("description freelancerId submission rating"); // Select only needed fields
+
+    if (!tasks || tasks.length === 0) {
+      return res.status(200).json([]); // Return empty array if no tasks found
+    }
+
+    // Ensure all tasks have a valid freelancerId
+    const filteredTasks = tasks.filter(task => task.freelancerId && task.freelancerId.username);
+    if (filteredTasks.length < tasks.length) {
+      console.warn("Some tasks have invalid or missing freelancer data:", tasks.filter(t => !t.freelancerId || !t.freelancerId.username));
+    }
+
+    res.status(200).json(filteredTasks);
+  } catch (error) {
+    console.error("Error fetching completed tasks:", error);
+    res.status(500).json({ error: "Failed to fetch tasks", details: error.message });
+  }
+});
+
+// Submit rating for a task
+app.post("/tasks/:taskId/rate", async (req, res) => {
+  try {
+    const taskId = req.params.taskId;
+    const { rating } = req.body;
+    if (!rating || rating < 1 || rating > 5) {
+      return res.status(400).json({ error: "Rating must be between 1 and 5" });
+    }
+
+    const task = await Task.findById(taskId);
+    if (!task) return res.status(404).json({ error: "Task not found" });
+    if (task.rating) return res.status(400).json({ error: "Task already rated" });
+    if (task.paymentStatus !== "fully paid" || task.status !== "confirmed") {
+      return res.status(400).json({ error: "Task must be fully paid and confirmed to rate" });
+    }
+
+    task.rating = rating;
+    await task.save();
+
+    // Update freelancer's reward points (rating * 10)
+    const freelancer = await usermodel.findById(task.freelancerId);
+    freelancer.rewardPoints = (freelancer.rewardPoints || 0) + rating * 10;
+    await freelancer.save();
+
+    res.status(200).json({ message: "Rating submitted successfully" });
+  } catch (error) {
+    console.error("Error submitting rating:", error);
+    res.status(500).json({ error: "Failed to submit rating" });
+  }
+});
+
+// Freelancer profile with ratings
+app.get("/freelancers/:freelancerId/profile", async (req, res) => {
+  try {
+    const freelancerId = req.params.freelancerId;
+    const freelancer = await usermodel.findById(freelancerId);
+    if (!freelancer || freelancer.role !== "Freelancer") {
+      return res.status(404).json({ error: "Freelancer not found" });
+    }
+
+    const tasks = await Task.find({
+      freelancerId,
+      paymentStatus: "fully paid",
+      status: "confirmed",
+      rating: { $exists: true },
+    }).select("rating");
+
+    let averageRating = 0;
+    if (tasks.length > 0) {
+      const totalRating = tasks.reduce((sum, task) => sum + task.rating, 0);
+      averageRating = (totalRating / tasks.length).toFixed(1);
+    }
+
+    res.status(200).json({
+      _id: freelancer._id,
+      username: freelancer.username,
+      emailid: freelancer.emailid,
+      phone: freelancer.phone,
+      averageRating: parseFloat(averageRating),
+      reviewCount: tasks.length,
+      rewardPoints: freelancer.rewardPoints,
+    });
+  } catch (error) {
+    console.error("Error fetching freelancer profile:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Redeem reward points
+app.post("/freelancers/:freelancerId/redeem", async (req, res) => {
+  try {
+    const freelancerId = req.params.freelancerId;
+    const { points } = req.body;
+    if (!points || points <= 0) {
+      return res.status(400).json({ error: "Invalid points value" });
+    }
+
+    const freelancer = await usermodel.findById(freelancerId);
+    if (!freelancer || freelancer.role !== "Freelancer") {
+      return res.status(404).json({ error: "Freelancer not found" });
+    }
+    if (freelancer.rewardPoints < points) {
+      return res.status(400).json({ error: "Insufficient reward points" });
+    }
+
+    freelancer.rewardPoints -= points;
+    await freelancer.save();
+
+    res.status(200).json({ message: `Successfully redeemed ${points} points`, remainingPoints: freelancer.rewardPoints });
+  } catch (error) {
+    console.error("Error redeeming points:", error);
+    res.status(500).json({ error: "Failed to redeem points" });
+  }
+});
+
+app.get("/tasks/all-points-history", authenticateToken, async (req, res) => {
+  try {
+    const tasks = await Task.find({
+      paymentStatus: "fully paid",
+      rating: { $exists: true, $ne: null },
+    })
+      .populate("freelancerId", "username")
+      .populate("ClientId", "username")
+      .select("description category rating fullyPaidAt freelancerId ClientId");
+    res.status(200).json(tasks);
+  } catch (error) {
+    console.error("Error fetching all points history:", error);
+    res.status(500).json({ message: "Error fetching points history", error: error.message });
+  }
+});
+
+app.get("/redemptions/all", authenticateToken, async (req, res) => {
+  try {
+    const redemptions = await Redemption.find()
+      .populate("userId", "username")
+      .sort({ redeemedAt: -1 })
+      .select("-__v");
+    res.status(200).json(redemptions);
+  } catch (error) {
+    console.error("Error fetching all redemptions:", error);
+    res.status(500).json({ message: "Error fetching redemptions", error: error.message });
+  }
+});
+
+// Freelancer-specific route
+app.get("/tasks/freelancer/:freelancerId/points-history", authenticateToken, async (req, res) => {
+  try {
+    const freelancerId = req.params.freelancerId;
+    if (req.user.userId !== freelancerId) {
+      return res.status(403).json({ message: "Unauthorized: You can only view your own points history" });
+    }
+    const tasks = await Task.find({
+      freelancerId: freelancerId,
+      paymentStatus: "fully paid",
+      rating: { $exists: true, $ne: null },
+    })
+      .select("description rating fullyPaidAt")
+      .populate("ClientId", "username");
+    res.status(200).json(tasks);
+  } catch (error) {
+    console.error("Error fetching points history:", error);
+    res.status(500).json({ message: "Error fetching points history", error: error.message });
+  }
+});
+
+
 app.post("/users/redeem-points", authenticateToken, async (req, res) => {
   try {
     const userId = req.user.userId;
     const { pointsToRedeem } = req.body;
 
-    if (!pointsToRedeem || pointsToRedeem <= 0) {
-      return res.status(400).json({ message: "Invalid points amount" });
+    if (!pointsToRedeem || pointsToRedeem <= 0 || pointsToRedeem % 10 !== 0) {
+      return res.status(400).json({ message: "Points to redeem must be a positive number in multiples of 10" });
     }
 
-    const user = await usermodel.findById(userId);
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
+    const freelancer = await usermodel.findById(userId);
+    if (!freelancer || freelancer.role !== "Freelancer") {
+      return res.status(404).json({ message: "Freelancer not found" });
     }
-    if (user.rewardPoints < pointsToRedeem) {
-      return res.status(400).json({ message: "Insufficient reward points" });
+
+    if (freelancer.rewardPoints < pointsToRedeem) {
+      return res.status(400).json({ message: "Insufficient points" });
     }
+
+    freelancer.rewardPoints -= pointsToRedeem;
+    await freelancer.save();
 
     const cashValue = pointsToRedeem / 10;
-    user.rewardPoints -= pointsToRedeem;
-    await user.save();
-
-    // Save redemption history (taskId optional, could be null if not tied to a specific task)
     const redemption = new Redemption({
-      userId,
+      userId: freelancer._id,
       pointsRedeemed: pointsToRedeem,
-      cashValue,
+      cashValue: cashValue,
     });
     await redemption.save();
 
     res.status(200).json({
       message: `Redeemed ${pointsToRedeem} points for $${cashValue}`,
-      remainingPoints: user.rewardPoints
+      remainingPoints: freelancer.rewardPoints,
     });
+  } catch (error) {
+    console.error("Error redeeming points:", error);
+    res.status(500).json({ message: "Error redeeming points", error: error.message });
+  }
+});
+
+
+app.post("/redemptions", authenticateToken, async (req, res) => {
+  const { userId, pointsRedeemed, cashValue } = req.body;
+  try {
+    const user = await usermodel.findById(userId);
+    if (!user || user.rewardPoints < pointsRedeemed) {
+      return res.status(400).json({ message: "Insufficient points or invalid user" });
+    }
+    user.rewardPoints -= pointsRedeemed;
+    await user.save();
+
+    const redemption = new Redemption({
+      userId,
+      pointsRedeemed,
+      cashValue,
+      redeemedAt: new Date(),
+    });
+    await redemption.save();
+
+    res.status(200).json({ message: "Points redeemed successfully", redemption });
   } catch (error) {
     console.error("Error redeeming points:", error);
     res.status(500).json({ message: "Error redeeming points", error: error.message });
@@ -564,8 +1145,44 @@ app.get("/redemptions", async (req, res) => {
   }
 });
 
+// New Route: Get Redemptions for a Specific User
+app.get("/redemptions/user/:userId", authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (req.user.id !== userId) {
+      return res.status(403).json({ message: "Unauthorized" });
+    }
+    const redemptions = await Redemption.find({ userId })
+      .sort({ redeemedAt: -1 })
+      .select("-__v");
+    res.status(200).json(redemptions);
+  } catch (error) {
+    console.error("Error fetching user redemptions:", error);
+    res.status(500).json({ message: "Error fetching redemptions", error: error.message });
+  }
+});
 
 
+app.get("/tasks/:taskId", authenticateToken, async (req, res) => {
+  try {
+    const { taskId } = req.params;
+    const userId = req.user.userId;
+
+    const task = await Task.findOne({
+      _id: taskId,
+      $or: [{ freelancerId: userId }, { ClientId: userId }],
+    }).populate("ClientId", "username").populate("freelancerId", "username");
+
+    if (!task) {
+      return res.status(404).json({ message: "Task not found or unauthorized" });
+    }
+
+    res.json(task);
+  } catch (error) {
+    console.error("Error fetching task:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+});
 const port = 3030;
 app.listen(port, () => {
   console.log(`Server started on port ${port}`);
